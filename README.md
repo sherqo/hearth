@@ -1,6 +1,6 @@
 # Hearth — warm home energy
 
-Battery status, charge-limit switch, power-profile switch, power hogs.
+Battery status, power-profile switch, power hogs.
 Pink Cat Boo, zero idle RAM (exits on quit).
 
 ## Run
@@ -22,8 +22,9 @@ Runtime deps (the backend shells out to them):
 sudo pacman -S --needed upower power-profiles-daemon
 ```
 
-Charge-limit changes need root; Hearth asks via `polkit` (`pkexec`),
-which is part of base `polkit`. No Nerd Font needed — plain text UI.
+Charge-limit changes are out of scope (they need root); set yours once
+via BIOS or `tlp`/`power-profiles-daemon` and Hearth stays root-free.
+No Nerd Font needed — plain text UI.
 
 The backend ships inside the binary: on first run Hearth extracts its
 helpers to `~/.local/share/hearth` (or `$XDG_DATA_HOME/hearth`) and
@@ -35,8 +36,8 @@ re-syncs them whenever they change. No Makefile, no manual copying.
 - `waybar/` — module snippet + Hyprland float rule.
 
 ## Controls
-`↑↓/jk` move · `h/l` charge limit −/+5% · `enter` select ·
-`x` kill hog (press twice to confirm) · `r` refresh · `q/esc` quit.
+`↑↓/jk` move · `enter` select · `x` kill hog (press twice to confirm) ·
+`r` refresh · `q/esc` quit.
 
 ## License
 MIT — see `LICENSE`. Omarchy-derived files keep their original terms;

@@ -1,7 +1,7 @@
 // Hearth — warm home energy (Bubble Tea TUI).
-// Battery status, charge limit, power profiles, system stats, power hogs.
+// Battery status, power profiles, system stats, power hogs.
 // Backend is Omarchy's power scripts, byte-identical (see bin/).
-// Keys: up/down or j/k move · h/l move pill · enter select ·
+// Keys: up/down or j/k move · enter select ·
 // x kill hog (twice to confirm) · r refresh · q/esc quit.
 package main
 
@@ -95,7 +95,7 @@ type Hog struct {
 }
 
 type Row struct {
-	Kind  string // charge, profile, hog
+	Kind  string // profile, hog
 	Text  string
 	Value string
 }
@@ -109,8 +109,6 @@ type State struct {
 	Active   string
 	Profiles []string
 	Stats    []string
-	Limit    int
-	Bat      string
 	Hogs     []Hog
 	Message  string
 }
@@ -120,16 +118,6 @@ func sh(args ...string) string {
 	defer cancel()
 	out, _ := exec.CommandContext(ctx, args[0], args[1:]...).Output()
 	return string(out)
-}
-
-func batDir() string {
-	entries, _ := os.ReadDir("/sys/class/power_supply")
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "BAT") {
-			return "/sys/class/power_supply/" + e.Name()
-		}
-	}
-	return ""
 }
 
 func battPath() string {
@@ -190,12 +178,6 @@ func snapshot() State {
 		line = strings.TrimSpace(line)
 		if line != "" {
 			st.Stats = append(st.Stats, line)
-		}
-	}
-	if dir := batDir(); dir != "" {
-		st.Bat = dir
-		if raw, err := os.ReadFile(dir + "/charge_control_end_threshold"); err == nil {
-			st.Limit, _ = strconv.Atoi(strings.TrimSpace(string(raw)))
 		}
 	}
 	// top CPU consumers (skip the header + our own ps/hearth)
@@ -267,16 +249,9 @@ func layoutWidths(termW int) (boxW, nameW int) {
 	return boxW, nameW
 }
 
-const (
-	chargeMin  = 20
-	chargeMax  = 100
-	chargeStep = 5
-)
-
 type model struct {
 	st        State
 	cursor    int
-	chargeSel int // pending limit %, 0 = follow hardware
 	width     int
 	height    int
 	busy      bool
@@ -297,7 +272,6 @@ func (m model) Init() tea.Cmd { return tickRefresh() }
 
 func selsOf(st *State) []Row {
 	var out []Row
-	out = append(out, Row{"charge", "", ""})
 	for _, p := range st.Profiles {
 		out = append(out, Row{"profile", p, p})
 	}
@@ -321,13 +295,10 @@ func clampCursor(m *model, n int) {
 	}
 }
 
-// contentLines mirrors View: charge row, profile section, hog section.
+// contentLines mirrors View: profile section, hog section.
 func contentLines(st *State) []int {
 	var out []int
 	idx := 0
-	out = append(out, idx) // charge
-	idx++
-	out = append(out, -1, -1) // blank + POWER PROFILE
 	for range st.Profiles {
 		out = append(out, idx)
 		idx++
@@ -387,25 +358,6 @@ func rowAtY(m *model, ss []Row, termW, termH, cursor, y int) int {
 	return lines[pos]
 }
 
-func setChargeLimit(limit int) string {
-	dir := batDir()
-	if dir == "" {
-		return "no battery found"
-	}
-	target := filepath.Join(dir, "charge_control_end_threshold")
-	want := strconv.Itoa(limit)
-	if cur, err := os.ReadFile(target); err == nil && strings.TrimSpace(string(cur)) == want {
-		return fmt.Sprintf("charge limit already %d%%", limit)
-	}
-	// pkexec pops a system auth dialog; never blocks the TUI on a tty prompt
-	cmd := exec.Command("pkexec", "tee", target)
-	cmd.Stdin = strings.NewReader(want)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "charge limit needs auth (" + shortName(strings.TrimSpace(string(out)), 40) + ")"
-	}
-	return fmt.Sprintf("charge limit → %d%%", limit)
-}
-
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -416,9 +368,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		incoming.Message = m.st.Message
 		m.st = incoming
 		clampCursor(&m, len(selsOf(&m.st)))
-		if m.chargeSel == 0 && m.st.Limit > 0 {
-			m.chargeSel = m.st.Limit
-		}
 		return m, tickRefresh()
 	case doneMsg:
 		m.busy = false
@@ -470,28 +419,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < len(ss)-1 {
 				m.cursor++
 			}
-		case "left", "h":
-			if m.cursor < len(ss) && ss[m.cursor].Kind == "charge" {
-				m.armedKill = ""
-				if m.chargeSel == 0 {
-					m.chargeSel = m.st.Limit
-				}
-				m.chargeSel -= chargeStep
-				if m.chargeSel < chargeMin {
-					m.chargeSel = chargeMin
-				}
-			}
-		case "right", "l":
-			if m.cursor < len(ss) && ss[m.cursor].Kind == "charge" {
-				m.armedKill = ""
-				if m.chargeSel == 0 {
-					m.chargeSel = m.st.Limit
-				}
-				m.chargeSel += chargeStep
-				if m.chargeSel > chargeMax {
-					m.chargeSel = chargeMax
-				}
-			}
 		case "x":
 			if m.cursor < len(ss) && ss[m.cursor].Kind == "hog" {
 				pid := ss[m.cursor].Value
@@ -512,13 +439,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < len(ss) && !m.busy {
 				r := ss[m.cursor]
 				switch r.Kind {
-				case "charge":
-					limit := m.chargeSel
-					if limit == 0 {
-						limit = m.st.Limit
-					}
-					m.busy = true
-					return m, func() tea.Msg { return doneMsg(setChargeLimit(limit)) }
 				case "profile":
 					m.busy = true
 					return m, func() tea.Msg {
@@ -580,12 +500,8 @@ func (m model) View() string {
 		r := ss[li]
 		if r.Kind != lastKind {
 			switch r.Kind {
-			case "charge":
-				b.WriteString("\n" + headSt.Render("CHARGE LIMIT") + "\n")
 			case "profile":
-				if lastKind != "profile" {
-					b.WriteString("\n" + headSt.Render("POWER PROFILE") + "\n")
-				}
+				b.WriteString("\n" + headSt.Render("POWER PROFILE") + "\n")
 			case "hog":
 				if lastKind != "hog" {
 					b.WriteString("\n" + headSt.Render("POWER HOGS") + "\n")
@@ -595,18 +511,6 @@ func (m model) View() string {
 		}
 		var line string
 		switch r.Kind {
-		case "charge":
-			sel := m.chargeSel
-			if sel == 0 {
-				sel = m.st.Limit
-			}
-			stepper := dimSt.Render("− ") + pillOn.Render(fmt.Sprintf("%d%%", sel)) + dimSt.Render(" ＋")
-			if m.st.Limit > 0 && sel != m.st.Limit {
-				stepper += dimSt.Render(fmt.Sprintf("  now %d%% · enter applies", m.st.Limit))
-			} else if m.st.Limit > 0 {
-				stepper += dimSt.Render(fmt.Sprintf("  now %d%%", m.st.Limit))
-			}
-			line = "  " + stepper
 		case "profile":
 			mark := "  "
 			if r.Value == m.st.Active {
@@ -636,17 +540,13 @@ func main() {
 	useASCII = !hasNerdFont() || os.Getenv("HEARTH_ASCII") == "1"
 	if len(os.Args) > 1 && os.Args[1] == "--dump" {
 		st := snapshot()
-		fmt.Printf("battery=%s pct=%d time=%s rate=%s health=%d active=%s profiles=%v limit=%d\n", st.Battery, st.Pct, st.Time, st.Rate, st.Health, st.Active, st.Profiles, st.Limit)
+		fmt.Printf("battery=%s pct=%d time=%s rate=%s health=%d active=%s profiles=%v\n", st.Battery, st.Pct, st.Time, st.Rate, st.Health, st.Active, st.Profiles)
 		for _, h := range st.Hogs {
 			fmt.Printf("hog\t%s\t%s\t%s\n", h.Pid, h.Comm, h.CPU)
 		}
 		return
 	}
 	m := model{st: snapshot()}
-	m.chargeSel = m.st.Limit
-	if m.chargeSel == 0 {
-		m.chargeSel = 80
-	}
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "hearth:", err)
