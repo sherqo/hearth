@@ -35,7 +35,7 @@ re-syncs them whenever they change. No Makefile, no manual copying.
 - `waybar/` — module snippet + Hyprland float rule.
 
 ## Controls
-`↑↓/jk` move · `h/l` move between charge-limit pills · `enter` select ·
+`↑↓/jk` move · `h/l` charge limit −/+5% · `enter` select ·
 `x` kill hog (press twice to confirm) · `r` refresh · `q/esc` quit.
 
 ## License

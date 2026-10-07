@@ -267,17 +267,21 @@ func layoutWidths(termW int) (boxW, nameW int) {
 	return boxW, nameW
 }
 
-var chargeOptions = []int{60, 80, 100}
+const (
+	chargeMin  = 20
+	chargeMax  = 100
+	chargeStep = 5
+)
 
 type model struct {
-	st           State
-	cursor       int
-	chargeCursor int
-	width        int
-	height       int
-	busy         bool
-	flash        string
-	armedKill    string
+	st        State
+	cursor    int
+	chargeSel int // pending limit %, 0 = follow hardware
+	width     int
+	height    int
+	busy      bool
+	flash     string
+	armedKill string
 }
 
 type refreshMsg State
@@ -412,8 +416,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		incoming.Message = m.st.Message
 		m.st = incoming
 		clampCursor(&m, len(selsOf(&m.st)))
-		if m.chargeCursor > len(chargeOptions)-1 {
-			m.chargeCursor = 0
+		if m.chargeSel == 0 && m.st.Limit > 0 {
+			m.chargeSel = m.st.Limit
 		}
 		return m, tickRefresh()
 	case doneMsg:
@@ -469,17 +473,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "left", "h":
 			if m.cursor < len(ss) && ss[m.cursor].Kind == "charge" {
 				m.armedKill = ""
-				m.chargeCursor--
-				if m.chargeCursor < 0 {
-					m.chargeCursor = len(chargeOptions) - 1
+				if m.chargeSel == 0 {
+					m.chargeSel = m.st.Limit
+				}
+				m.chargeSel -= chargeStep
+				if m.chargeSel < chargeMin {
+					m.chargeSel = chargeMin
 				}
 			}
 		case "right", "l":
 			if m.cursor < len(ss) && ss[m.cursor].Kind == "charge" {
 				m.armedKill = ""
-				m.chargeCursor++
-				if m.chargeCursor >= len(chargeOptions) {
-					m.chargeCursor = 0
+				if m.chargeSel == 0 {
+					m.chargeSel = m.st.Limit
+				}
+				m.chargeSel += chargeStep
+				if m.chargeSel > chargeMax {
+					m.chargeSel = chargeMax
 				}
 			}
 		case "x":
@@ -503,7 +513,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r := ss[m.cursor]
 				switch r.Kind {
 				case "charge":
-					limit := chargeOptions[m.chargeCursor]
+					limit := m.chargeSel
+					if limit == 0 {
+						limit = m.st.Limit
+					}
 					m.busy = true
 					return m, func() tea.Msg { return doneMsg(setChargeLimit(limit)) }
 				case "profile":
@@ -583,29 +596,17 @@ func (m model) View() string {
 		var line string
 		switch r.Kind {
 		case "charge":
-			var pills []string
-			for bi, opt := range chargeOptions {
-				label := fmt.Sprintf("%d%%", opt)
-				if opt == m.st.Limit {
-					label += " ●"
-				}
-				if bi == m.chargeCursor {
-					pills = append(pills, pillOn.Render(label))
-				} else {
-					pills = append(pills, pillOff.Render(label))
-				}
+			sel := m.chargeSel
+			if sel == 0 {
+				sel = m.st.Limit
 			}
-			// custom limit (e.g. 70) not in presets: show it
-			custom := true
-			for _, opt := range chargeOptions {
-				if opt == m.st.Limit {
-					custom = false
-				}
+			stepper := dimSt.Render("− ") + pillOn.Render(fmt.Sprintf("%d%%", sel)) + dimSt.Render(" ＋")
+			if m.st.Limit > 0 && sel != m.st.Limit {
+				stepper += dimSt.Render(fmt.Sprintf("  now %d%% · enter applies", m.st.Limit))
+			} else if m.st.Limit > 0 {
+				stepper += dimSt.Render(fmt.Sprintf("  now %d%%", m.st.Limit))
 			}
-			if custom && m.st.Limit > 0 {
-				pills = append(pills, dimSt.Render(fmt.Sprintf("now %d%%", m.st.Limit)))
-			}
-			line = "  " + strings.Join(pills, " ")
+			line = "  " + stepper
 		case "profile":
 			mark := "  "
 			if r.Value == m.st.Active {
@@ -642,12 +643,9 @@ func main() {
 		return
 	}
 	m := model{st: snapshot()}
-	// preselect charge pill matching current limit
-	for i, opt := range chargeOptions {
-		if opt == m.st.Limit {
-			m.chargeCursor = i
-			break
-		}
+	m.chargeSel = m.st.Limit
+	if m.chargeSel == 0 {
+		m.chargeSel = 80
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
